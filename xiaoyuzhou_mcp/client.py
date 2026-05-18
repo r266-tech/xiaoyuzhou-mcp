@@ -59,6 +59,11 @@ def _app_headers(access_token: str | None = None, device_id: str | None = None) 
     return headers
 
 
+def _format_ts(ms: int) -> str:
+    s = max(0, int(ms)) // 1000
+    return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+
+
 def _web_headers() -> dict[str, str]:
     return {
         "accept": "application/json, text/plain, */*",
@@ -317,6 +322,114 @@ class XiaoyuzhouClient:
             "transcript_url": url,
             "status": "available" if url else "no_subtitle",
         }
+
+    def fetch_transcript(
+        self,
+        eid: str,
+        media_id: str,
+        fmt: str = "plain",
+        include_segments: bool = False,
+    ) -> dict[str, Any]:
+        """Fetch + parse the official transcript JSON behind the signed URL.
+
+        The transcript CDN is behind a User-Agent ACL — only the official
+        Xiaoyuzhou Android UA is whitelisted. We use the same app headers that
+        already work for /v1/* API calls.
+
+        Args:
+            eid: episode id
+            media_id: episode media_id (from get_episode / list_recent_episodes)
+            fmt: 'plain' | 'timestamped' | 'segments'
+                 - plain: lines joined by '\n', no timestamps
+                 - timestamped: each line prefixed with '[hh:mm:ss] '
+                 - segments: omit rendered text; only segment list (with include_segments=True implied)
+            include_segments: also return the parsed segment list alongside the rendered text
+
+        Returns one of:
+            {'status': 'no_subtitle', ...}
+            {'status': 'available', 'segment_count': int, 'format': str,
+             'text': str,                       # when fmt != 'segments'
+             'segments': [{startMs, text}, ...] # when fmt == 'segments' or include_segments
+            }
+        """
+        fmt = fmt.lower()
+        if fmt not in ("plain", "timestamped", "segments"):
+            raise XiaoyuzhouError(
+                "bad_format",
+                f"fmt must be plain|timestamped|segments, got {fmt!r}",
+            )
+
+        info = self.get_transcript_url(eid, media_id)
+        if info.get("status") != "available" or not info.get("transcript_url"):
+            return {"status": "no_subtitle", "transcript_url": None}
+
+        url = info["transcript_url"]
+        try:
+            r = httpx.get(
+                url,
+                headers={"User-Agent": "Xiaoyuzhou/2.99.1(android 28)"},
+                timeout=30.0,
+                follow_redirects=True,
+            )
+        except httpx.HTTPError as e:
+            raise XiaoyuzhouError(
+                "transcript_fetch_failed",
+                f"could not fetch transcript: {e}",
+                hint="CDN may be down; retry, or fall back to get_transcript_url and let the caller fetch.",
+            ) from e
+        if r.status_code != 200:
+            raise XiaoyuzhouError(
+                "transcript_http_error",
+                f"transcript CDN returned HTTP {r.status_code}",
+                hint=(
+                    "If 403, the upstream UA whitelist may have changed — "
+                    "update _app_headers in client.py."
+                ),
+            )
+        try:
+            data = r.json()
+        except ValueError as e:
+            preview = r.text[:200]
+            raise XiaoyuzhouError(
+                "transcript_parse_failed",
+                f"transcript not JSON ({e}); first 200 chars: {preview!r}",
+            ) from e
+        if not isinstance(data, list):
+            raise XiaoyuzhouError(
+                "transcript_unexpected_shape",
+                f"expected list of segments, got {type(data).__name__}",
+            )
+
+        segments: list[dict[str, Any]] = []
+        for seg in data:
+            if not isinstance(seg, dict):
+                continue
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+            start_ms = int(seg.get("startMs") or 0)
+            segments.append({"startMs": start_ms, "text": text})
+
+        out: dict[str, Any] = {
+            "status": "available",
+            "segment_count": len(segments),
+            "format": fmt,
+        }
+
+        if fmt == "segments":
+            out["segments"] = segments
+            return out
+
+        if fmt == "plain":
+            out["text"] = "\n".join(s["text"] for s in segments)
+        else:  # timestamped
+            out["text"] = "\n".join(
+                f"[{_format_ts(s['startMs'])}] {s['text']}" for s in segments
+            )
+
+        if include_segments:
+            out["segments"] = segments
+        return out
 
     def list_play_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Recently played episodes (newest first)."""

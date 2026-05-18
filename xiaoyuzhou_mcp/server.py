@@ -116,6 +116,54 @@ def get_transcript_url(eid: str, media_id: str) -> dict[str, Any]:
 
 @mcp.tool(annotations=READONLY)
 @_wrap
+def get_transcript(
+    eid: str,
+    media_id: str,
+    fmt: str = "timestamped",
+    include_segments: bool = False,
+) -> dict[str, Any]:
+    """Download and parse the official transcript for an episode.
+
+    This is the one-shot version of get_transcript_url — it fetches the signed
+    JSON behind the CDN (which is behind a User-Agent ACL) and returns rendered
+    text and/or parsed segments directly. Prefer this over get_transcript_url
+    unless the caller specifically needs to handle the signed URL itself.
+
+    Args:
+        eid: episode id
+        media_id: from get_episode / list_recent_episodes (`media_id` field)
+        fmt: 'timestamped' (default) | 'plain' | 'segments'
+             - 'timestamped': text with `[hh:mm:ss] ` prefix per line
+             - 'plain': text only, lines joined by '\\n'
+             - 'segments': structured segment list only (no rendered text)
+        include_segments: when True (and fmt != 'segments'), also include the
+            parsed segment list alongside the rendered text.
+
+    Returns:
+        {'status': 'no_subtitle', 'transcript_url': None}  -- no official transcript
+        {'status': 'available',
+         'segment_count': int,
+         'format': str,
+         'text': str,              # present when fmt != 'segments'
+         'segments': [             # present when fmt == 'segments' or include_segments=True
+             {'startMs': int, 'text': str}, ...
+         ]}
+
+    Notes:
+    - Transcripts can be very large (10h episode ≈ 600KB plain / 730KB timestamped).
+      Prefer fmt='segments' + include_segments=False (the default for segments
+      mode) only when you'll slice locally; otherwise the rendered text is
+      easier to skim.
+    - 'no_subtitle' means upstream Xiaoyuzhou has no human-edited transcript.
+      You may run Whisper on get_episode(...).audio_url instead.
+    """
+    return _get_client().fetch_transcript(
+        eid, media_id, fmt=fmt, include_segments=include_segments
+    )
+
+
+@mcp.tool(annotations=READONLY)
+@_wrap
 def search(query: str, kind: str = "PODCAST", limit: int = 20) -> list[dict[str, Any]]:
     """Search podcasts or episodes by keyword.
 
