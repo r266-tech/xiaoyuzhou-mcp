@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.DS_Store
+
+# Local state — never commit credentials
+state/
+token.json
+*.token
+
+# Build artifacts
+dist/
+build/
+*.whl

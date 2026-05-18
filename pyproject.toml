@@ -1,0 +1,16 @@
+[project]
+name = "xiaoyuzhou-mcp"
+version = "0.0.1"
+description = "Xiaoyuzhou FM MCP server — agent-friendly, clean."
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "mcp>=1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["xiaoyuzhou_mcp"]
