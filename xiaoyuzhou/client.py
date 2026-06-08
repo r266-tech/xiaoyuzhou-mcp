@@ -23,6 +23,10 @@ import httpx
 API_BASE = "https://api.xiaoyuzhoufm.com"
 PODCASTER_BASE = "https://podcaster-api.xiaoyuzhoufm.com"
 
+# Safety ceiling for loadMoreKey paging (each page ≈ 15 episodes upstream).
+# 100 pages ≈ 1500 episodes — well past the largest real feed.
+EPISODE_LIST_MAX_PAGES = 100
+
 DEFAULT_STATE_DIR = Path(
     os.environ.get("XIAOYUZHOU_STATE_DIR")
     or os.environ.get("BABATA_STATE_DIR", str(Path.home() / "cc-workspace/state"))
@@ -291,19 +295,75 @@ class XiaoyuzhouClient:
     # -- Domain methods (verification surface) ------------------------------
 
     def list_subscriptions(self) -> list[dict[str, Any]]:
-        """Returns flat list of subscribed podcasts."""
+        """Returns flat list of subscribed podcasts.
+
+        limit=200 covers any realistic subscription count in one call (the daily
+        ingest loops over all of these, so a low cap would silently drop feeds).
+        """
         data = self._api_post(
             "/v1/subscription/list",
-            {"limit": "20", "sortOrder": "desc", "sortBy": "subscribedAt"},
+            {"limit": "200", "sortOrder": "desc", "sortBy": "subscribedAt"},
         )
         items = data.get("data", [])
         return [_normalize_podcast(p) for p in items]
 
-    def list_episodes(self, pid: str, limit: int = 20) -> list[dict[str, Any]]:
-        data = self._api_post(
-            "/v1/episode/list", {"pid": pid, "limit": str(limit), "order": "desc"}
-        )
-        return [_normalize_episode(e) for e in data.get("data", [])]
+    def list_episodes(
+        self,
+        pid: str,
+        limit: int = 20,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List a podcast's episodes, newest first, auto-paginating via loadMoreKey.
+
+        The upstream /v1/episode/list caps each page at ~15 and returns a
+        `loadMoreKey` cursor; we follow it so callers are never stuck on one page.
+
+        Date window (inclusive 'YYYY-MM-DD', compared on pub_date[:10]):
+        - `since` set      → page until we pass it, return everything in
+          [since, until]. `limit` is ignored (full window coverage).
+        - `until` only     → page past the too-new head, return the newest
+          `limit` episodes on/before `until`.
+        - no date bound    → newest `limit` episodes.
+        """
+        lo = since or "0000-00-00"
+        hi = until or "9999-99-99"
+        windowed = since is not None or until is not None
+        collected: list[dict[str, Any]] = []
+        load_more_key: Any = None
+        pages = 0
+        while True:
+            payload: dict[str, Any] = {"pid": pid, "limit": "25", "order": "desc"}
+            if load_more_key:
+                payload["loadMoreKey"] = load_more_key
+            data = self._api_post("/v1/episode/list", payload)
+            page = [_normalize_episode(e) for e in data.get("data", [])]
+            collected.extend(page)
+            pages += 1
+            load_more_key = data.get("loadMoreKey")
+            if not page or not load_more_key or pages >= EPISODE_LIST_MAX_PAGES:
+                break
+            if windowed:
+                if since is not None:
+                    # stop once the page drops below the lower bound
+                    oldest = (page[-1].get("pub_date") or "")[:10]
+                    if oldest and oldest < since:
+                        break
+                else:
+                    # until-only: page past the too-new head, stop once `limit`
+                    # episodes fall inside the window
+                    in_window = sum(
+                        1 for e in collected
+                        if lo <= (e.get("pub_date") or "")[:10] <= hi
+                    )
+                    if in_window >= limit:
+                        break
+            elif len(collected) >= limit:
+                break
+        if windowed:
+            res = [e for e in collected if lo <= (e.get("pub_date") or "")[:10] <= hi]
+            return res if since is not None else res[:limit]
+        return collected[:limit]
 
     def get_episode(self, eid: str) -> dict[str, Any]:
         data = self._api_request("GET", "/v1/episode/get", params={"eid": eid})

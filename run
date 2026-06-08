@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
+# Thin launcher for the Xiaoyuzhou CLI: `run <subcommand> [args...]`.
+# Runs the package from its own dir so no install/venv is required.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
-exec python3 -m xiaoyuzhou_mcp
+exec python3 -m xiaoyuzhou "$@"

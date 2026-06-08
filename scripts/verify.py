@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from xiaoyuzhou_mcp.client import XiaoyuzhouClient, XiaoyuzhouError
+from xiaoyuzhou.client import XiaoyuzhouClient, XiaoyuzhouError
 
 
 def main() -> int:
