@@ -104,6 +104,8 @@ python scripts/verify.py  # direct client smoke test
 
 ## Gotchas
 
+- **Date windows are Beijing-local (UTC+8)** — the API's `pubDate` is UTC, but the app (and any human) means Beijing days. `--since/--until` convert before comparing, so an episode posted 00:00–08:00 Beijing lands on the right day instead of the previous UTC day.
+- **RSS-bridged shows still have transcripts** — for podcasts syndicated from external hosts (e.g. Ximalaya), `media.id` is the external playback URL and asking the transcript API about it returns `no_subtitle`. Xiaoyuzhou mirrors the audio and serves the transcript under the episode's native `transcriptMediaId`; the client's `media_id` prefers it automatically (identical to `media.id` for native shows).
 - **Android UA is required** — the transcript CDN validates User-Agent strictly; `_app_headers()` already uses the correct Xiaomi MI 6 / Android 28 UA.
 - **`get_episode` is GET + query string**; other authenticated endpoints are POST + JSON body (mirrors the app).
 - **`history` has no precise played-seconds** — upstream only exposes `is_played` / `is_finished`.

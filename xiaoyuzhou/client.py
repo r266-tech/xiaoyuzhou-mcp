@@ -14,7 +14,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,23 @@ PODCASTER_BASE = "https://podcaster-api.xiaoyuzhoufm.com"
 # Safety ceiling for loadMoreKey paging (each page ≈ 15 episodes upstream).
 # 100 pages ≈ 1500 episodes — well past the largest real feed.
 EPISODE_LIST_MAX_PAGES = 100
+
+# Xiaoyuzhou is a China service; the app shows episode dates in Beijing time
+# (UTC+8), and so does the user. The API's pubDate is UTC, so date-window
+# filters MUST convert first — otherwise an early-Beijing-morning post (e.g.
+# 北京 00:00–08:00 → the previous UTC day) gets misfiled to the wrong date.
+CN_TZ = timezone(timedelta(hours=8))
+
+
+def _local_date(pub_date: str | None) -> str:
+    """UTC ISO pubDate → Beijing-local 'YYYY-MM-DD' (what the app/users mean)."""
+    if not pub_date:
+        return ""
+    try:
+        dt = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
+    except ValueError:
+        return pub_date[:10]  # fall back to raw UTC date string
+    return dt.astimezone(CN_TZ).strftime("%Y-%m-%d")
 
 DEFAULT_STATE_DIR = Path(
     os.environ.get("XIAOYUZHOU_STATE_DIR")
@@ -319,7 +336,8 @@ class XiaoyuzhouClient:
         The upstream /v1/episode/list caps each page at ~15 and returns a
         `loadMoreKey` cursor; we follow it so callers are never stuck on one page.
 
-        Date window (inclusive 'YYYY-MM-DD', compared on pub_date[:10]):
+        Date window (inclusive 'YYYY-MM-DD', compared on Beijing-local date —
+        see _local_date; matches what the app and the user call "that day"):
         - `since` set      → page until we pass it, return everything in
           [since, until]. `limit` is ignored (full window coverage).
         - `until` only     → page past the too-new head, return the newest
@@ -346,7 +364,7 @@ class XiaoyuzhouClient:
             if windowed:
                 if since is not None:
                     # stop once the page drops below the lower bound
-                    oldest = (page[-1].get("pub_date") or "")[:10]
+                    oldest = _local_date(page[-1].get("pub_date"))
                     if oldest and oldest < since:
                         break
                 else:
@@ -354,14 +372,14 @@ class XiaoyuzhouClient:
                     # episodes fall inside the window
                     in_window = sum(
                         1 for e in collected
-                        if lo <= (e.get("pub_date") or "")[:10] <= hi
+                        if lo <= _local_date(e.get("pub_date")) <= hi
                     )
                     if in_window >= limit:
                         break
             elif len(collected) >= limit:
                 break
         if windowed:
-            res = [e for e in collected if lo <= (e.get("pub_date") or "")[:10] <= hi]
+            res = [e for e in collected if lo <= _local_date(e.get("pub_date")) <= hi]
             return res if since is not None else res[:limit]
         return collected[:limit]
 
@@ -561,7 +579,14 @@ def _normalize_episode(e: dict) -> dict:
         "shownotes_html": e.get("shownotes"),
         "duration_seconds": e.get("duration"),
         "pub_date": e.get("pubDate"),
-        "media_id": media.get("id"),
+        # Transcript endpoints want the NATIVE media id. For RSS-bridged shows
+        # (e.g. Ximalaya-hosted), media.id is the external playback URL while the
+        # transcript lives under a separate native transcriptMediaId — Xiaoyuzhou
+        # mirrors the audio and still generates 文稿. Prefer it; identical to
+        # media.id for native episodes, so this is a no-op there.
+        "media_id": (e.get("transcriptMediaId")
+                     or (e.get("transcript") or {}).get("mediaId")
+                     or media.get("id")),
         "audio_url": media_source.get("url") or enclosure.get("url"),
         "image_url": (e.get("image") or {}).get("picUrl"),
     }
